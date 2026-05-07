@@ -1,6 +1,7 @@
 """
 =============================================================
-  TRANSFORMER OIL DEGRADATION — STREAMLIT DASHBOARD
+  TRANSFORMER OIL DEGRADATION — STREAMLIT DASHBOARD v3
+  Scale: REAL-WORLD (months, 0–180 months = 15 years)
   Run with: streamlit run dashboard.py
 =============================================================
 Install dependencies first:
@@ -64,13 +65,20 @@ st.markdown("""
 
 
 # ─── DATA ─────────────────────────────────────────────────
+# Time axis: 0–180 months (15 years) — real-world scale
+# Remaining_Life: 0–180 months
+# Zone boundaries:
+#   Good     : 0  – ~32 months
+#   Moderate : 32 – ~72 months
+#   Bad      : 72 – 180 months
 
 @st.cache_data
 def load_data():
+    # 51 points linearly spaced over 180 months
+    time_months = [round(i * 180 / 50, 1) for i in range(51)]  # 0.0 to 180.0
+
     data = {
-        "Time_days":      [0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,
-                           40,42,44,46,48,50,52,54,56,58,60,62,64,66,68,70,72,74,76,78,
-                           80,82,84,86,88,90,92,94,96,98,100],
+        "Time_months":    time_months,
         "Rb_MOhm":        [1200,1192,1185,1170,1158,1145,1128,1105,1080,1055,1030,1005,980,
                            955,930,900,875,850,820,790,760,730,700,670,640,610,580,550,520,
                            490,460,435,410,385,360,335,310,290,270,250,230,210,195,180,165,
@@ -89,7 +97,8 @@ def load_data():
                            0.243,0.262,0.282,0.303,0.325,0.348,0.372,0.397,0.423,0.450,
                            0.478,0.507,0.537,0.568,0.600,0.633,0.667,0.702,0.738,0.775,0.813],
         "Health_Status":  ["Good"]*9+["Moderate"]*11+["Bad"]*31,
-        "Remaining_Life": list(range(100, -2, -2))
+        # Remaining_Life in months: 180 months → 0 months
+        "Remaining_Life": [round(i * 180 / 50, 1) for i in range(50, -1, -1)],
     }
     return pd.DataFrame(data)
 
@@ -124,6 +133,9 @@ clf, reg, le, FEATURES = train_models(df)
 
 color_map = {"Good": "#3B6D11", "Moderate": "#BA7517", "Bad": "#A32D2D"}
 
+# Zone boundaries in months
+GOOD_END = 18 / 100 * 180   # ≈ 32.4 months
+MOD_END  = 40 / 100 * 180   # ≈ 72.0 months
 
 # ─── SIDEBAR ──────────────────────────────────────────────
 
@@ -137,8 +149,13 @@ with st.sidebar:
     freq = st.slider("Frequency Response",          0.020, 0.813, 0.085, step=0.001)
 
     st.divider()
-    st.caption("📌 Real-world note")
-    st.info("Transformer oil typically lasts **10–15 years**. This dataset uses 100-day accelerated simulation for ML training.")
+    st.caption("📌 Real-world scale")
+    st.info(
+        "Transformer oil typically lasts **10–15 years (120–180 months)** "
+        "under normal operating conditions.\n\n"
+        "⚠ **Warning threshold**: 24 months remaining\n\n"
+        "🚨 **Critical threshold**: 6 months remaining"
+    )
 
     st.divider()
     if st.button("🔁 Load Good Sample"):
@@ -151,7 +168,8 @@ with st.sidebar:
 
 X_in = pd.DataFrame([{"Rb_MOhm": rb, "Rct_Ohm": rct, "Impedance_Ohm": imp, "Freq_Response": freq}])
 health_pred  = le.inverse_transform(clf.predict(X_in[FEATURES]))[0]
-life_pred    = max(0, round(float(reg.predict(X_in[FEATURES])[0]), 1))
+life_months  = max(0, round(float(reg.predict(X_in[FEATURES])[0]), 1))
+life_years   = round(life_months / 12, 1)
 hi           = health_index(rb, rct, imp, freq)
 proba        = dict(zip(le.classes_, clf.predict_proba(X_in[FEATURES])[0]))
 
@@ -159,15 +177,27 @@ proba        = dict(zip(le.classes_, clf.predict_proba(X_in[FEATURES])[0]))
 # ─── HEADER ───────────────────────────────────────────────
 
 st.markdown('<p class="main-title">⚡ Transformer Oil Degradation Monitor</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">EIS-based condition monitoring | ML prediction system</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">EIS-based condition monitoring | ML prediction system | Real-world scale: 0–180 months</p>', unsafe_allow_html=True)
 
-# Alert
-if life_pred <= 20:
-    st.markdown(f'<div class="alert-critical">🚨 CRITICAL: Oil will reach failure condition in approximately <strong>{life_pred} days</strong>. Replace immediately.</div>', unsafe_allow_html=True)
-elif life_pred <= 40:
-    st.markdown(f'<div class="alert-warning">⚠️ WARNING: Oil is degrading. Plan maintenance within <strong>{life_pred} days</strong>.</div>', unsafe_allow_html=True)
+# Alert — thresholds in months
+if life_months <= 6:
+    st.markdown(
+        f'<div class="alert-critical">🚨 CRITICAL: Oil will reach failure in approximately '
+        f'<strong>{life_months} months</strong>. Replace immediately.</div>',
+        unsafe_allow_html=True
+    )
+elif life_months <= 24:
+    st.markdown(
+        f'<div class="alert-warning">⚠️ WARNING: Oil is degrading. Plan maintenance within '
+        f'<strong>{life_months} months ({life_years} years)</strong>.</div>',
+        unsafe_allow_html=True
+    )
 else:
-    st.markdown(f'<div class="alert-ok">✅ STATUS OK: Oil condition is acceptable. Estimated <strong>{life_pred} days</strong> remaining.</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="alert-ok">✅ STATUS OK: Oil condition is acceptable. Estimated '
+        f'<strong>{life_months} months ({life_years} years)</strong> remaining.</div>',
+        unsafe_allow_html=True
+    )
 
 st.markdown("---")
 
@@ -177,7 +207,7 @@ st.markdown("---")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("🩺 Health Status",   health_pred)
 c2.metric("💯 Health Index",    f"{hi} / 100")
-c3.metric("⏳ Remaining Life",  f"{life_pred} days")
+c3.metric("⏳ Remaining Life",  f"{life_months} months ({life_years} yrs)")
 c4.metric("📉 Degradation",     f"{round(100-hi, 1)}%")
 
 st.markdown("---")
@@ -238,15 +268,30 @@ st.markdown("---")
 st.subheader("📊 Parameter Trends & Degradation Zones")
 tab1, tab2, tab3, tab4 = st.tabs(["Rb (MΩ)", "Rct (Ω)", "Impedance (Ω)", "Frequency Response"])
 
-def make_trend(col, ylabel, current_val, invert=False):
+def make_trend(col, ylabel, current_val):
     fig = go.Figure()
-    fig.add_vrect(x0=0, x1=18, fillcolor="#3B6D11", opacity=0.07, line_width=0, annotation_text="Good", annotation_position="top left")
-    fig.add_vrect(x0=18, x1=40, fillcolor="#BA7517", opacity=0.07, line_width=0, annotation_text="Moderate", annotation_position="top left")
-    fig.add_vrect(x0=40, x1=100, fillcolor="#A32D2D", opacity=0.07, line_width=0, annotation_text="Bad", annotation_position="top left")
-    fig.add_trace(go.Scatter(x=df["Time_days"], y=df[col], mode="lines+markers",
-                             line=dict(color="#185FA5", width=2), marker=dict(size=4), name=ylabel))
-    fig.add_hline(y=current_val, line_dash="dash", line_color="orange", annotation_text=f"Current: {current_val}")
-    fig.update_layout(xaxis_title="Time (days)", yaxis_title=ylabel, height=300, margin=dict(t=20, b=20))
+    # Zone shading in months
+    fig.add_vrect(x0=0,        x1=GOOD_END, fillcolor="#3B6D11", opacity=0.07,
+                  line_width=0, annotation_text="Good Zone",     annotation_position="top left")
+    fig.add_vrect(x0=GOOD_END, x1=MOD_END,  fillcolor="#BA7517", opacity=0.07,
+                  line_width=0, annotation_text="Moderate Zone", annotation_position="top left")
+    fig.add_vrect(x0=MOD_END,  x1=180,      fillcolor="#A32D2D", opacity=0.07,
+                  line_width=0, annotation_text="Bad Zone",      annotation_position="top left")
+    fig.add_trace(go.Scatter(
+        x=df["Time_months"], y=df[col],
+        mode="lines+markers",
+        line=dict(color="#185FA5", width=2),
+        marker=dict(size=4),
+        name=ylabel
+    ))
+    fig.add_hline(y=current_val, line_dash="dash", line_color="orange",
+                  annotation_text=f"Current: {current_val}")
+    fig.update_layout(
+        xaxis_title="Time (months)",
+        yaxis_title=ylabel,
+        height=300,
+        margin=dict(t=20, b=20)
+    )
     return fig
 
 with tab1:
@@ -263,21 +308,42 @@ st.markdown("---")
 
 # ─── REMAINING LIFE PROJECTION ────────────────────────────
 
-st.subheader("⏳ Remaining Life Projection")
+st.subheader("⏳ Remaining Life Projection (months)")
 fig_l = go.Figure()
-fig_l.add_trace(go.Scatter(x=df["Time_days"], y=df["Remaining_Life"],
-                           mode="lines", fill="tozeroy",
-                           line=dict(color="#534AB7", width=2),
-                           fillcolor="rgba(83,74,183,0.10)",
-                           name="Remaining Life (days)"))
-est_age = max(0, 100 - life_pred)
-fig_l.add_vline(x=est_age, line_dash="dash", line_color="orange",
-                annotation_text=f"You are here (~day {round(est_age)})")
-fig_l.add_hline(y=20, line_dash="dot", line_color="red",
-                annotation_text="⚠ Critical threshold (20 days)")
-fig_l.update_layout(xaxis_title="Time (days)", yaxis_title="Remaining Life (days)",
-                    height=300, margin=dict(t=20, b=20))
+fig_l.add_trace(go.Scatter(
+    x=df["Time_months"], y=df["Remaining_Life"],
+    mode="lines", fill="tozeroy",
+    line=dict(color="#534AB7", width=2),
+    fillcolor="rgba(83,74,183,0.10)",
+    name="Remaining Life (months)"
+))
+
+# Estimate current age from remaining life
+est_age_months = max(0, 180 - life_months)
+fig_l.add_vline(
+    x=est_age_months, line_dash="dash", line_color="orange",
+    annotation_text=f"You are here (~{round(est_age_months)} months / {round(est_age_months/12, 1)} yrs)"
+)
+fig_l.add_hline(
+    y=24, line_dash="dot", line_color="#BA7517",
+    annotation_text="⚠ Warning: 24 months remaining"
+)
+fig_l.add_hline(
+    y=6, line_dash="dot", line_color="red",
+    annotation_text="🚨 Critical: 6 months remaining"
+)
+fig_l.update_layout(
+    xaxis_title="Time (months)",
+    yaxis_title="Remaining Life (months)",
+    height=320,
+    margin=dict(t=20, b=20)
+)
 st.plotly_chart(fig_l, use_container_width=True)
 
 st.markdown("---")
-st.caption("🎓 Project: Transformer Oil Condition Monitoring | Dataset: 51 accelerated-aging samples | Models: Random Forest Classifier + Regressor")
+st.caption(
+    "🎓 Project: Transformer Oil Condition Monitoring | "
+    "Dataset: 51 samples (0–180 months real-world scale) | "
+    "Models: Random Forest Classifier + Regressor | "
+    "Standard: IEC 60422 transformer oil maintenance"
+)
