@@ -1,14 +1,14 @@
 """
 =============================================================
-  TRANSFORMER OIL DEGRADATION ANALYSIS — IMPROVED PIPELINE v2
+  TRANSFORMER OIL DEGRADATION ANALYSIS — PIPELINE v3
   Project : Condition Monitoring using EIS Parameters
   Dataset : 51 samples + SMOTE balancing + sensor noise
   Models  : Random Forest, Decision Tree, KNN, SVM compared
-  New     : Cross-validation, Confusion Matrix, Model Comparison
-            SMOTE Balancing, Sensor Noise, Feature Importance Plot
+  Scale   : REAL-WORLD (months, 0–180 months = 15 years)
+            Good oil: ~180 months | Critical: <6 months
 =============================================================
 
-Install dependencies:
+Install dependencies first:
   pip install pandas numpy scikit-learn matplotlib imbalanced-learn
 =============================================================
 """
@@ -37,9 +37,19 @@ from imblearn.over_sampling import SMOTE
 
 
 # ─── STEP 1: LOAD & PREPARE DATA ──────────────────────────
+# NOTE: Time axis is now in MONTHS (0–180 months = 15 years)
+# Remaining_Life is also in MONTHS.
+# This reflects real transformer oil lifespan under normal
+# operating conditions (IEC 60422 standard).
 
 def load_data(filepath="transformer_oil_dataset.csv"):
     df = pd.read_csv(filepath)
+
+    # ── Rescale time axis: 100 lab-days → 180 real months ──
+    # The original dataset used 100 accelerated-aging days.
+    # We map this linearly to 0–180 months (15 years).
+    df["Time_months"]    = (df["Time_days"] / 100 * 180).round(1)
+    df["Remaining_Life"] = (df["Remaining_Life"] / 100 * 180).round(1)
 
     print("=" * 60)
     print("  STEP 1: DATA LOADING & PREPARATION")
@@ -47,6 +57,8 @@ def load_data(filepath="transformer_oil_dataset.csv"):
     print(f"\n  Shape         : {df.shape[0]} rows × {df.shape[1]} columns")
     print(f"  Missing values: {df.isnull().sum().sum()}")
     print(f"  Duplicates    : {df.duplicated().sum()}")
+    print(f"\n  Time scale    : 0 – 180 months (real-world, 15 years)")
+    print(f"  Remaining Life: 0 – 180 months")
     print(f"\n  Class distribution (original):")
     print(df["Health_Status"].value_counts().to_string())
     print(f"\n  ⚠  Class imbalance detected:")
@@ -95,8 +107,8 @@ def engineer_features(df):
     print("  STEP 3: FEATURE ENGINEERING")
     print("=" * 60)
 
-    rb_n  = (df["Rb_MOhm"]        - 90)    / (1200  - 90)
-    rct_n = (df["Rct_Ohm"]        - 90)    / (950   - 90)
+    rb_n  = (df["Rb_MOhm"]          - 90)    / (1200  - 90)
+    rct_n = (df["Rct_Ohm"]          - 90)    / (950   - 90)
     imp_n = 1 - (df["Impedance_Ohm"] - 500)  / (1680 - 500)
     frq_n = 1 - (df["Freq_Response"] - 0.020) / (0.813 - 0.020)
 
@@ -111,8 +123,8 @@ def engineer_features(df):
     print(f"    Health_Index — weighted composite score (0–100)")
     print(f"    Rb_Change    — rate of Rb decline per sample")
     print(f"    Imp_Change   — rate of Impedance rise per sample")
-    print(f"\n  Health Index at key points:")
-    print(df[["Time_days","Health_Status","Health_Index"]].iloc[::10].to_string(index=False))
+    print(f"\n  Health Index at key points (every ~18 months):")
+    print(df[["Time_months", "Health_Status", "Health_Index"]].iloc[::10].to_string(index=False))
 
     return df
 
@@ -164,7 +176,6 @@ def compare_models(X, y, le):
     for name, model in models.items():
         scores = cross_val_score(model, X, y, cv=cv, scoring="accuracy")
         results[name] = scores
-        bar = "█" * int(scores.mean() * 30)
         print(f"  {name:<25} {scores.mean()*100:>10.1f}%  {scores.std()*100:>8.1f}%  "
               f"{scores.min()*100:>6.1f}%  {scores.max()*100:>6.1f}%")
 
@@ -201,7 +212,7 @@ def compare_models(X, y, le):
     return models[best_name], best_name
 
 
-# ─── STEP 6: TRAIN BEST CLASSIFIER ───────────────────────
+# ─── STEP 6A: TRAIN BEST CLASSIFIER ──────────────────────
 
 def train_classification(X_bal, y_bal, X_orig, y_orig, le, best_model, best_name):
     print("\n" + "=" * 60)
@@ -263,24 +274,27 @@ def train_classification(X_bal, y_bal, X_orig, y_orig, le, best_model, best_name
     return best_model
 
 
-# ─── STEP 7: REGRESSION MODEL ─────────────────────────────
+# ─── STEP 6B: REGRESSION MODEL ────────────────────────────
+# Remaining_Life is now in MONTHS (0–180).
+# Warning threshold : 24 months  (2 years)
+# Critical threshold:  6 months  (6 months before failure)
 
 def train_regression(df, FEATURES):
     print("\n" + "=" * 60)
-    print("  STEP 6B: REGRESSION MODEL — Remaining Life")
+    print("  STEP 6B: REGRESSION MODEL — Remaining Life (months)")
     print("=" * 60)
 
     X = df[FEATURES]
-    y = df["Remaining_Life"]
+    y = df["Remaining_Life"]          # now in months (0–180)
     X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42)
 
     models = {
-        "Linear Regression":      LinearRegression(),
+        "Linear Regression":       LinearRegression(),
         "Random Forest Regressor": RandomForestRegressor(n_estimators=100, random_state=42),
     }
     trained = {}
-    print(f"\n  {'Model':<28} {'MAE':>8} {'RMSE':>8} {'R²':>8}")
-    print(f"  {'-'*54}")
+    print(f"\n  {'Model':<28} {'MAE (mo)':>10} {'RMSE (mo)':>10} {'R²':>8}")
+    print(f"  {'-'*58}")
 
     for name, model in models.items():
         model.fit(X_tr, y_tr)
@@ -288,7 +302,7 @@ def train_regression(df, FEATURES):
         mae  = mean_absolute_error(y_te, y_pred)
         rmse = np.sqrt(mean_squared_error(y_te, y_pred))
         r2   = r2_score(y_te, y_pred)
-        print(f"  {name:<28} {mae:>7.2f}  {rmse:>7.2f}  {r2:>7.4f}")
+        print(f"  {name:<28} {mae:>9.2f}  {rmse:>9.2f}  {r2:>7.4f}")
         trained[name] = (model, y_pred)
 
     # Cross-validation for regression
@@ -303,25 +317,29 @@ def train_regression(df, FEATURES):
         mn, mx = min(y_te.min(), y_pred.min()), max(y_te.max(), y_pred.max())
         ax.plot([mn, mx], [mn, mx], "r--", lw=1.5, label="Perfect fit")
         r2 = r2_score(y_te, y_pred)
-        ax.set_xlabel("Actual Remaining Life (days)", fontsize=10)
-        ax.set_ylabel("Predicted Remaining Life (days)", fontsize=10)
+        ax.set_xlabel("Actual Remaining Life (months)", fontsize=10)
+        ax.set_ylabel("Predicted Remaining Life (months)", fontsize=10)
         ax.set_title(f"{name}\nR² = {r2:.4f}", fontsize=10)
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
-    fig.suptitle("Regression: Predicted vs Actual (with sensor noise)",
+    fig.suptitle("Regression: Predicted vs Actual Remaining Life (months)",
                  fontsize=12, fontweight="bold")
     plt.tight_layout()
-    plt.savefig("regression_results_v2.png", dpi=150, bbox_inches="tight")
+    plt.savefig("regression_results_v3.png", dpi=150, bbox_inches="tight")
     plt.show()
-    print("  Regression plot saved → regression_results_v2.png")
+    print("  Regression plot saved → regression_results_v3.png")
 
     best_reg = trained["Random Forest Regressor"][0]
     best_reg.fit(X, y)
     return best_reg
 
 
-# ─── STEP 8: PREDICTION SYSTEM ────────────────────────────
+# ─── STEP 7: PREDICTION SYSTEM ────────────────────────────
+# Thresholds (real-world):
+#   CRITICAL : remaining life ≤  6 months  → replace immediately
+#   WARNING  : remaining life ≤ 24 months  → plan maintenance
+#   OK       : remaining life >  24 months
 
 def predict(clf_model, reg_model, le, FEATURES, inputs: dict):
     print("\n" + "=" * 60)
@@ -334,35 +352,37 @@ def predict(clf_model, reg_model, le, FEATURES, inputs: dict):
 
     X_in = pd.DataFrame([{f: inputs[f] for f in FEATURES}])
 
-    health  = le.inverse_transform(clf_model.predict(X_in))[0]
-    proba   = dict(zip(le.classes_, clf_model.predict_proba(X_in)[0]))
-    life    = max(0, round(float(reg_model.predict(X_in)[0]), 1))
+    health = le.inverse_transform(clf_model.predict(X_in))[0]
+    proba  = dict(zip(le.classes_, clf_model.predict_proba(X_in)[0]))
+    life   = max(0, round(float(reg_model.predict(X_in)[0]), 1))
 
-    rb_n  = (inputs["Rb_MOhm"]        - 90)    / (1200  - 90)
-    rct_n = (inputs["Rct_Ohm"]        - 90)    / (950   - 90)
-    imp_n = 1 - (inputs["Impedance_Ohm"] - 500)  / (1680 - 500)
+    rb_n  = (inputs["Rb_MOhm"]         - 90)    / (1200  - 90)
+    rct_n = (inputs["Rct_Ohm"]         - 90)    / (950   - 90)
+    imp_n = 1 - (inputs["Impedance_Ohm"] - 500) / (1680  - 500)
     frq_n = 1 - (inputs["Freq_Response"] - 0.020) / (0.813 - 0.020)
     hi    = round((rb_n*0.30 + rct_n*0.30 + imp_n*0.20 + frq_n*0.20) * 100, 1)
+
+    life_years = round(life / 12, 1)
 
     print(f"\n  ── PREDICTION RESULTS ──────────────────────────")
     print(f"  Health Status   : {health}")
     print(f"  Health Index    : {hi}/100")
-    print(f"  Remaining Life  : {life} days")
+    print(f"  Remaining Life  : {life} months  ({life_years} years)")
     print(f"\n  Class Probabilities:")
     for cls, p in sorted(proba.items(), key=lambda x: -x[1]):
         bar = "█" * int(p * 35)
         print(f"    {cls:<12} {bar}  {p*100:.1f}%")
 
-    if life <= 20:
-        print(f"\n  🚨 CRITICAL : Replace oil immediately! Only {life} days left.")
-    elif life <= 40:
-        print(f"\n  ⚠  WARNING  : Schedule maintenance. {life} days remaining.")
+    if life <= 6:
+        print(f"\n  🚨 CRITICAL : Replace oil immediately! Only {life} months left.")
+    elif life <= 24:
+        print(f"\n  ⚠  WARNING  : Schedule maintenance within {life} months ({life_years} yrs).")
     else:
-        print(f"\n  ✓  STATUS OK: Oil acceptable. {life} days remaining.")
+        print(f"\n  ✓  STATUS OK: Oil acceptable. {life} months ({life_years} yrs) remaining.")
     print(f"  {'─'*47}")
 
 
-# ─── STEP 9: FINAL SUMMARY PLOT ───────────────────────────
+# ─── STEP 8: FINAL SUMMARY PLOT ───────────────────────────
 
 def plot_summary(df):
     print("\n" + "=" * 60)
@@ -372,12 +392,20 @@ def plot_summary(df):
     color_map = {"Good": "#3B6D11", "Moderate": "#BA7517", "Bad": "#A32D2D"}
     colors = [color_map[s] for s in df["Health_Status"]]
 
+    # Zone boundaries scaled to months
+    # Good: 0–32.4 mo | Moderate: 32.4–72 mo | Bad: 72–180 mo
+    good_end  = 18 / 100 * 180   # ~32
+    mod_end   = 40 / 100 * 180   # ~72
+    max_time  = 180
+
     fig = plt.figure(figsize=(16, 10))
-    fig.suptitle("Transformer Oil Degradation — Project Summary",
-                 fontsize=15, fontweight="bold", y=1.01)
+    fig.suptitle("Transformer Oil Degradation — Project Summary (Real-World Scale: 0–180 months)",
+                 fontsize=14, fontweight="bold", y=1.01)
     gs = gridspec.GridSpec(2, 4, figure=fig, hspace=0.4, wspace=0.35)
 
-    zones = [(0, 18, "#3B6D11", 0.07), (18, 40, "#BA7517", 0.07), (40, 100, "#A32D2D", 0.07)]
+    zones = [(0, good_end, "#3B6D11", 0.07),
+             (good_end, mod_end, "#BA7517", 0.07),
+             (mod_end, max_time, "#A32D2D", 0.07)]
 
     def add_zones(ax):
         for x0, x1, c, a in zones:
@@ -392,8 +420,8 @@ def plot_summary(df):
     for col, label, pos in params:
         ax = fig.add_subplot(pos)
         add_zones(ax)
-        ax.scatter(df["Time_days"], df[col], c=colors, s=14, alpha=0.9)
-        ax.set_xlabel("Time (days)", fontsize=8)
+        ax.scatter(df["Time_months"], df[col], c=colors, s=14, alpha=0.9)
+        ax.set_xlabel("Time (months)", fontsize=8)
         ax.set_ylabel(label, fontsize=8)
         ax.set_title(label, fontsize=9, fontweight="bold")
         ax.tick_params(labelsize=7)
@@ -402,29 +430,29 @@ def plot_summary(df):
     # Health Index over time
     ax5 = fig.add_subplot(gs[1, 0:2])
     add_zones(ax5)
-    scatter = ax5.scatter(df["Time_days"], df["Health_Index"],
-                          c=[{"Good":0,"Moderate":1,"Bad":2}[s] for s in df["Health_Status"]],
-                          cmap="RdYlGn_r", s=20, alpha=0.9)
+    ax5.scatter(df["Time_months"], df["Health_Index"],
+                c=[{"Good": 0, "Moderate": 1, "Bad": 2}[s] for s in df["Health_Status"]],
+                cmap="RdYlGn_r", s=20, alpha=0.9)
     ax5.axhline(75, color="#3B6D11", linestyle="--", alpha=0.6, linewidth=1, label="Good threshold (75)")
     ax5.axhline(50, color="#BA7517", linestyle="--", alpha=0.6, linewidth=1, label="Moderate threshold (50)")
-    ax5.set_xlabel("Time (days)", fontsize=9)
+    ax5.set_xlabel("Time (months)", fontsize=9)
     ax5.set_ylabel("Health Index (0–100)", fontsize=9)
     ax5.set_title("Health Index Over Time", fontsize=10, fontweight="bold")
     ax5.legend(fontsize=8)
     ax5.grid(True, alpha=0.25)
 
-    # Remaining life
+    # Remaining life in months
     ax6 = fig.add_subplot(gs[1, 2:4])
     add_zones(ax6)
-    ax6.fill_between(df["Time_days"], df["Remaining_Life"],
-                     alpha=0.15, color="#534AB7")
-    ax6.plot(df["Time_days"], df["Remaining_Life"],
-             color="#534AB7", linewidth=2)
-    ax6.axhline(40, color="#BA7517", linestyle="--", alpha=0.7, linewidth=1, label="⚠ Warning (40 days)")
-    ax6.axhline(20, color="#A32D2D", linestyle="--", alpha=0.7, linewidth=1, label="🚨 Critical (20 days)")
-    ax6.set_xlabel("Time (days)", fontsize=9)
-    ax6.set_ylabel("Remaining Life (days)", fontsize=9)
-    ax6.set_title("Remaining Life Projection", fontsize=10, fontweight="bold")
+    ax6.fill_between(df["Time_months"], df["Remaining_Life"], alpha=0.15, color="#534AB7")
+    ax6.plot(df["Time_months"], df["Remaining_Life"], color="#534AB7", linewidth=2)
+    ax6.axhline(24, color="#BA7517", linestyle="--", alpha=0.7, linewidth=1,
+                label="⚠ Warning (24 months / 2 years)")
+    ax6.axhline(6,  color="#A32D2D", linestyle="--", alpha=0.7, linewidth=1,
+                label="🚨 Critical (6 months)")
+    ax6.set_xlabel("Time (months)", fontsize=9)
+    ax6.set_ylabel("Remaining Life (months)", fontsize=9)
+    ax6.set_title("Remaining Life Projection (months)", fontsize=10, fontweight="bold")
     ax6.legend(fontsize=8)
     ax6.grid(True, alpha=0.25)
 
@@ -442,8 +470,10 @@ def plot_summary(df):
 if __name__ == "__main__":
 
     print("\n" + "=" * 60)
-    print("  TRANSFORMER OIL DEGRADATION — ML PIPELINE v2")
-    print("  Improvements: SMOTE + Noise + CV + Model Comparison")
+    print("  TRANSFORMER OIL DEGRADATION — ML PIPELINE v3")
+    print("  Scale: REAL-WORLD months (0–180 months = 15 years)")
+    print("  Good oil: ~162–180 months remaining")
+    print("  Critical: ≤ 6 months remaining")
     print("=" * 60)
 
     FEATURES = ["Rb_MOhm", "Rct_Ohm", "Impedance_Ohm", "Freq_Response"]
@@ -469,18 +499,23 @@ if __name__ == "__main__":
         X_bal, y_bal, X_orig, y_encoded, le, best_clf, best_name
     )
 
-    # Step 6B: Regression
+    # Step 6B: Regression (Remaining Life in months)
     reg_model = train_regression(df_noisy, FEATURES)
 
-    # Step 7: Live predictions
+    # Step 7: Live predictions — results now shown in months + years
+    print("\n  --- Sample 1: Moderate condition oil ---")
     predict(clf_model, reg_model, le, FEATURES, {
         "Rb_MOhm": 850, "Rct_Ohm": 660,
         "Impedance_Ohm": 710, "Freq_Response": 0.085
     })
+
+    print("\n  --- Sample 2: Critical / near-end oil ---")
     predict(clf_model, reg_model, le, FEATURES, {
         "Rb_MOhm": 150, "Rct_Ohm": 140,
         "Impedance_Ohm": 1530, "Freq_Response": 0.633
     })
+
+    print("\n  --- Sample 3: Fresh / good oil ---")
     predict(clf_model, reg_model, le, FEATURES, {
         "Rb_MOhm": 1145, "Rct_Ohm": 890,
         "Impedance_Ohm": 518, "Freq_Response": 0.028
@@ -492,9 +527,9 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("  ALL STEPS COMPLETE")
     print("  Output files generated:")
-    print("    model_comparison.png    ← compare all 5 models")
-    print("    confusion_matrix.png    ← classification accuracy")
-    print("    feature_importance.png  ← which parameter matters most")
-    print("    regression_results_v2.png ← predicted vs actual life")
-    print("    project_summary.png     ← full dashboard for report")
+    print("    model_comparison.png     ← compare all 5 models")
+    print("    confusion_matrix.png     ← classification accuracy")
+    print("    feature_importance.png   ← which parameter matters most")
+    print("    regression_results_v3.png ← predicted vs actual life (months)")
+    print("    project_summary.png      ← full dashboard for report")
     print("=" * 60)
